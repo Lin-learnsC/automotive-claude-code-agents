@@ -507,6 +507,84 @@ class GPTAdapter(ModelAdapter):
             raise
 
 
+class KimiAdapter(ModelAdapter):
+    """Adapter for Moonshot Kimi API (OpenAI-compatible)."""
+
+    def __init__(self, config: ModelConfig, cache: Optional[ResponseCache] = None):
+        super().__init__(config, cache)
+        self._client = None
+
+    @property
+    def client(self):
+        """Lazy initialization of OpenAI client for Kimi."""
+        if self._client is None:
+            try:
+                from openai import OpenAI
+                self._client = OpenAI(
+                    api_key=self._get_api_key(),
+                    base_url=self.config.endpoint or "https://api.moonshot.cn/v1"
+                )
+            except ImportError:
+                raise ImportError(
+                    "openai package required. Install with: pip install openai"
+                )
+        return self._client
+
+    async def get_completion(
+        self,
+        messages: List[Dict[str, str]],
+        system_prompt: str
+    ) -> Tuple[str, float]:
+        """Get completion from Kimi."""
+        # Check cache first
+        if self.cache:
+            cache_key = self._build_cache_key(messages, system_prompt)
+            cached = self.cache.get(cache_key, self.config.get_cache_key())
+            if cached:
+                return cached, 0.0
+
+        start_time = time.perf_counter()
+        self._request_count += 1
+
+        # Prepend system message
+        full_messages = [{"role": "system", "content": system_prompt}] + messages
+
+        try:
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.client.chat.completions.create(
+                    model=self.config.name,
+                    messages=full_messages,
+                    max_tokens=self.config.max_tokens,
+                    temperature=self.config.temperature
+                )
+            )
+
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            response_text = response.choices[0].message.content
+
+            # Update token count
+            if hasattr(response, 'usage') and response.usage:
+                self._total_tokens += response.usage.total_tokens
+
+            self.logger.debug(
+                f"Kimi response received in {duration_ms:.0f}ms "
+                f"({len(response_text)} chars)"
+            )
+
+            # Cache the response
+            if self.cache:
+                cache_key = self._build_cache_key(messages, system_prompt)
+                self.cache.set(cache_key, self.config.get_cache_key(), response_text)
+
+            return response_text, duration_ms
+
+        except Exception as e:
+            self.logger.error(f"Kimi API error: {e}")
+            raise
+
+
 # =============================================================================
 # Consensus Analyzer
 # =============================================================================
@@ -929,6 +1007,23 @@ class LLMCouncil:
         ]
     )
 
+    DEFAULT_KIMI_CONFIG = ModelConfig(
+        name="kimi-latest",
+        provider="kimi",
+        api_key_env="KIMI_API_KEY",
+        endpoint="https://api.moonshot.cn/v1",
+        max_tokens=8192,
+        temperature=0.7,
+        strengths=[
+            "long-context-processing",
+            "chinese-technical-docs",
+            "pattern-recognition",
+            "fast-symptom-analysis",
+            "code-smell-detection",
+            "micro-optimizations"
+        ]
+    )
+
     # Task type routing configuration
     TASK_ROUTING = {
         TaskType.CODE_OPTIMIZATION: {
@@ -1017,7 +1112,16 @@ class LLMCouncil:
 
         # Initialize adapters with cache
         self.claude_adapter = ClaudeAdapter(self.claude_config, self.cache)
-        self.gpt_adapter = GPTAdapter(self.gpt_config, self.cache)
+
+        # Support multiple secondary providers (GPT, Kimi, etc.)
+        if self.gpt_config.provider == "kimi":
+            self.gpt_adapter = KimiAdapter(self.gpt_config, self.cache)
+            self.secondary_label = self.gpt_config.name
+        else:
+            self.gpt_adapter = GPTAdapter(self.gpt_config, self.cache)
+            self.secondary_label = "GPT-5.4"
+
+        self.primary_label = self.claude_config.name
 
         # Initialize analyzers
         self.consensus_analyzer = ConsensusAnalyzer()
@@ -1068,12 +1172,12 @@ class LLMCouncil:
 
         # Build system prompts
         claude_system = self._build_system_prompt(
-            "Claude Opus 4.6",
+            self.primary_label,
             routing["claude_focus"],
             self.claude_config.strengths
         )
         gpt_system = self._build_system_prompt(
-            "GPT-5.4",
+            self.secondary_label,
             routing["gpt_focus"],
             self.gpt_config.strengths
         )
@@ -1503,24 +1607,24 @@ Provide a structured response with your analysis and recommendations.
 
         for round_data in history:
             if perspective == "claude":
-                # Claude sees its own responses as assistant, GPT's as user context
+                # Primary model sees its own responses as assistant, secondary's as user context
                 messages.append({
                     "role": "assistant",
                     "content": round_data.claude_response
                 })
                 messages.append({
                     "role": "user",
-                    "content": f"[GPT-5.4's perspective]:\n{round_data.gpt_response}\n\nPlease continue the debate, addressing GPT's points."
+                    "content": f"[{self.secondary_label}'s perspective]:\n{round_data.gpt_response}\n\nPlease continue the debate, addressing {self.secondary_label}'s points."
                 })
             else:
-                # GPT sees its own responses as assistant, Claude's as user context
+                # Secondary model sees its own responses as assistant, primary's as user context
                 messages.append({
                     "role": "assistant",
                     "content": round_data.gpt_response
                 })
                 messages.append({
                     "role": "user",
-                    "content": f"[Claude Opus 4.6's perspective]:\n{round_data.claude_response}\n\nPlease continue the debate, addressing Claude's points."
+                    "content": f"[{self.primary_label}'s perspective]:\n{round_data.claude_response}\n\nPlease continue the debate, addressing {self.primary_label}'s points."
                 })
 
         return messages
@@ -1539,7 +1643,7 @@ Provide a structured response with your analysis and recommendations.
         """
         synthesis_prompt = self._build_synthesis_prompt(topic, context, history)
 
-        synthesis_system = """You are synthesizing a multi-model debate for automotive software development.
+        synthesis_system = f"""You are synthesizing a multi-model debate for automotive software development.
 
 Your task is to:
 1. Identify consensus points between both models
@@ -1554,7 +1658,7 @@ Output format:
 - Point 2
 
 ## Divergent Opinions
-- Area 1: Claude says X, GPT says Y
+- Area 1: {self.primary_label} says X, {self.secondary_label} says Y
 
 ## Trade-off Analysis
 Brief analysis of key trade-offs
@@ -1614,10 +1718,10 @@ Clear, specific recommendation
 **Consensus State**: {round_data.consensus_state.value}
 **Agreement Score**: {round_data.agreement_score:.2f}
 
-**Claude Opus 4.6:**
+**{self.primary_label}:**
 {round_data.claude_response}
 
-**GPT-5.4:**
+**{self.secondary_label}:**
 {round_data.gpt_response}
 
 **Key Agreements**: {', '.join(round_data.key_agreements) or 'None identified'}
@@ -1837,6 +1941,12 @@ async def main():
         help="Enable P0 skill validation"
     )
     parser.add_argument(
+        "--secondary-provider",
+        choices=["gpt", "kimi"],
+        default="gpt",
+        help="Secondary model provider (default: gpt)"
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging"
@@ -1855,10 +1965,15 @@ async def main():
 
     # Initialize council
     artifact_path = Path(args.output) if args.output else None
+    gpt_config = None
+    if args.secondary_provider == "kimi":
+        gpt_config = LLMCouncil.DEFAULT_KIMI_CONFIG
+
     council = LLMCouncil(
         artifact_base_path=artifact_path,
         enable_cache=not args.no_cache,
-        enable_parallel=not args.no_parallel
+        enable_parallel=not args.no_parallel,
+        gpt_config=gpt_config
     )
 
     # Run debate
