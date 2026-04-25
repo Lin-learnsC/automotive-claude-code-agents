@@ -1,5 +1,7 @@
 # Directory Mapping - Automotive Claude Code Agents
 
+> Prefer a quick-start version? Read `docs/DIRECTORY_MAP_READABLE.md` first, then return here for full details.
+
 ## Overview
 
 This document explains the skill directory structure and addresses the apparent duplication between `automotive-*` prefixed directories and their non-prefixed counterparts.
