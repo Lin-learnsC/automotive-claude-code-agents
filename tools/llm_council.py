@@ -426,8 +426,17 @@ class ClaudeAdapter(ModelAdapter):
             raise
 
 
-class GPTAdapter(ModelAdapter):
-    """Adapter for Azure OpenAI GPT API."""
+class OpenAICompatibleAdapter(ModelAdapter):
+    """Universal adapter for all OpenAI-compatible APIs.
+
+    Supports:
+    - Azure OpenAI (provider="azure-openai")
+    - Moonshot Kimi (provider="kimi")
+    - DeepSeek (provider="deepseek")
+    - Zhipu GLM (provider="zhipu")
+    - OpenRouter (provider="openrouter")
+    - Any other OpenAI-compatible endpoint
+    """
 
     def __init__(self, config: ModelConfig, cache: Optional[ResponseCache] = None):
         super().__init__(config, cache)
@@ -435,17 +444,24 @@ class GPTAdapter(ModelAdapter):
 
     @property
     def client(self):
-        """Lazy initialization of OpenAI client."""
+        """Lazy initialization of OpenAI-compatible client."""
         if self._client is None:
             try:
-                from openai import AzureOpenAI
-                self._client = AzureOpenAI(
-                    api_key=self._get_api_key(),
-                    api_version=self.config.api_version or "2024-12-01-preview",
-                    azure_endpoint=self.config.endpoint or os.environ.get(
-                        "AZURE_OPENAI_ENDPOINT", ""
+                if self.config.provider == "azure-openai":
+                    from openai import AzureOpenAI
+                    self._client = AzureOpenAI(
+                        api_key=self._get_api_key(),
+                        api_version=self.config.api_version or "2024-12-01-preview",
+                        azure_endpoint=self.config.endpoint or os.environ.get(
+                            "AZURE_OPENAI_ENDPOINT", ""
+                        )
                     )
-                )
+                else:
+                    from openai import OpenAI
+                    self._client = OpenAI(
+                        api_key=self._get_api_key(),
+                        base_url=self.config.endpoint or "https://api.openai.com/v1"
+                    )
             except ImportError:
                 raise ImportError(
                     "openai package required. Install with: pip install openai"
@@ -457,7 +473,7 @@ class GPTAdapter(ModelAdapter):
         messages: List[Dict[str, str]],
         system_prompt: str
     ) -> Tuple[str, float]:
-        """Get completion from GPT."""
+        """Get completion from OpenAI-compatible API."""
         # Check cache first
         if self.cache:
             cache_key = self._build_cache_key(messages, system_prompt)
@@ -491,7 +507,7 @@ class GPTAdapter(ModelAdapter):
                 self._total_tokens += response.usage.total_tokens
 
             self.logger.debug(
-                f"GPT response received in {duration_ms:.0f}ms "
+                f"{self.config.provider} response received in {duration_ms:.0f}ms "
                 f"({len(response_text)} chars)"
             )
 
@@ -503,86 +519,19 @@ class GPTAdapter(ModelAdapter):
             return response_text, duration_ms
 
         except Exception as e:
-            self.logger.error(f"GPT API error: {e}")
+            self.logger.error(f"{self.config.provider} API error: {e}")
             raise
 
 
-class KimiAdapter(ModelAdapter):
-    """Adapter for Moonshot Kimi API (OpenAI-compatible)."""
+# Backward-compatible aliases
+class GPTAdapter(OpenAICompatibleAdapter):
+    """Adapter for Azure OpenAI GPT API. (Deprecated: use OpenAICompatibleAdapter)"""
+    pass
 
-    def __init__(self, config: ModelConfig, cache: Optional[ResponseCache] = None):
-        super().__init__(config, cache)
-        self._client = None
 
-    @property
-    def client(self):
-        """Lazy initialization of OpenAI client for Kimi."""
-        if self._client is None:
-            try:
-                from openai import OpenAI
-                self._client = OpenAI(
-                    api_key=self._get_api_key(),
-                    base_url=self.config.endpoint or "https://api.moonshot.cn/v1"
-                )
-            except ImportError:
-                raise ImportError(
-                    "openai package required. Install with: pip install openai"
-                )
-        return self._client
-
-    async def get_completion(
-        self,
-        messages: List[Dict[str, str]],
-        system_prompt: str
-    ) -> Tuple[str, float]:
-        """Get completion from Kimi."""
-        # Check cache first
-        if self.cache:
-            cache_key = self._build_cache_key(messages, system_prompt)
-            cached = self.cache.get(cache_key, self.config.get_cache_key())
-            if cached:
-                return cached, 0.0
-
-        start_time = time.perf_counter()
-        self._request_count += 1
-
-        # Prepend system message
-        full_messages = [{"role": "system", "content": system_prompt}] + messages
-
-        try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.client.chat.completions.create(
-                    model=self.config.name,
-                    messages=full_messages,
-                    max_tokens=self.config.max_tokens,
-                    temperature=self.config.temperature
-                )
-            )
-
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            response_text = response.choices[0].message.content
-
-            # Update token count
-            if hasattr(response, 'usage') and response.usage:
-                self._total_tokens += response.usage.total_tokens
-
-            self.logger.debug(
-                f"Kimi response received in {duration_ms:.0f}ms "
-                f"({len(response_text)} chars)"
-            )
-
-            # Cache the response
-            if self.cache:
-                cache_key = self._build_cache_key(messages, system_prompt)
-                self.cache.set(cache_key, self.config.get_cache_key(), response_text)
-
-            return response_text, duration_ms
-
-        except Exception as e:
-            self.logger.error(f"Kimi API error: {e}")
-            raise
+class KimiAdapter(OpenAICompatibleAdapter):
+    """Adapter for Moonshot Kimi API. (Deprecated: use OpenAICompatibleAdapter)"""
+    pass
 
 
 # =============================================================================
@@ -1024,6 +973,23 @@ class LLMCouncil:
         ]
     )
 
+    DEFAULT_DEEPSEEK_CONFIG = ModelConfig(
+        name="deepseek-chat",
+        provider="deepseek",
+        api_key_env="DEEPSEEK_API_KEY",
+        endpoint="https://api.deepseek.com/v1",
+        max_tokens=8192,
+        temperature=0.7,
+        strengths=[
+            "chain-of-thought-reasoning",
+            "cost-efficient-analysis",
+            "chinese-technical-docs",
+            "code-generation",
+            "mathematical-optimization",
+            "long-context-processing"
+        ]
+    )
+
     # Task type routing configuration
     TASK_ROUTING = {
         TaskType.CODE_OPTIMIZATION: {
@@ -1113,13 +1079,13 @@ class LLMCouncil:
         # Initialize adapters with cache
         self.claude_adapter = ClaudeAdapter(self.claude_config, self.cache)
 
-        # Support multiple secondary providers (GPT, Kimi, etc.)
-        if self.gpt_config.provider == "kimi":
-            self.gpt_adapter = KimiAdapter(self.gpt_config, self.cache)
+        # Support multiple secondary providers (GPT, Kimi, DeepSeek, etc.)
+        if self.gpt_config.provider == "anthropic":
+            self.gpt_adapter = ClaudeAdapter(self.gpt_config, self.cache)
             self.secondary_label = self.gpt_config.name
         else:
-            self.gpt_adapter = GPTAdapter(self.gpt_config, self.cache)
-            self.secondary_label = "GPT-5.4"
+            self.gpt_adapter = OpenAICompatibleAdapter(self.gpt_config, self.cache)
+            self.secondary_label = self.gpt_config.name
 
         self.primary_label = self.claude_config.name
 
@@ -1942,7 +1908,7 @@ async def main():
     )
     parser.add_argument(
         "--secondary-provider",
-        choices=["gpt", "kimi"],
+        choices=["gpt", "kimi", "deepseek"],
         default="gpt",
         help="Secondary model provider (default: gpt)"
     )
@@ -1968,6 +1934,8 @@ async def main():
     gpt_config = None
     if args.secondary_provider == "kimi":
         gpt_config = LLMCouncil.DEFAULT_KIMI_CONFIG
+    elif args.secondary_provider == "deepseek":
+        gpt_config = LLMCouncil.DEFAULT_DEEPSEEK_CONFIG
 
     council = LLMCouncil(
         artifact_base_path=artifact_path,

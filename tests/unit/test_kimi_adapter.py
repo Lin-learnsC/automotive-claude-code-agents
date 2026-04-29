@@ -226,7 +226,7 @@ class TestKimiAdapterErrorHandling:
                 with pytest.raises(RuntimeError, match="Connection reset"):
                     await adapter.get_completion(sample_messages, sample_system_prompt)
 
-        assert "Kimi API error: Connection reset" in caplog.text
+        assert "kimi API error: Connection reset" in caplog.text
         assert adapter._request_count == 1  # Request was attempted
 
     @pytest.mark.asyncio

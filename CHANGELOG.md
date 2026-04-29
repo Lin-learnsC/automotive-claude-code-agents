@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI/CD pipelines with GitHub Actions
 - Docker containerization support
 - Comprehensive documentation with MkDocs
+- **Universal OpenAI-compatible adapter** (`OpenAICompatibleAdapter`) supporting Kimi, DeepSeek, Zhipu, OpenRouter, Azure OpenAI, and any OpenAI-compatible platform
+- DeepSeek secondary provider support (`--secondary-provider deepseek`)
+- Backward-compatible aliases for `GPTAdapter` and `KimiAdapter`
 
 ### Categories of Skills
 - **ADAS & Autonomous**: Camera/LiDAR object detection, sensor fusion, path planning
