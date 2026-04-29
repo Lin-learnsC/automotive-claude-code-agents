@@ -13,7 +13,7 @@
 |------|------|------|---------|
 | **P0** | 仓库框架层（建立地图） | ✅ 完成 | 仓库导航图、目录结构理解 |
 | **P1** | 核心机制解剖 | ✅ 完成 | ToolRouter + Agent 编排四层模型 |
-| **P2** | 领域按需深入 | 🔄 待启动 | ADAS / AUTOSAR / Battery / Safety 任选 |
+| **P2** | 领域按需深入 | 🔄 进行中 | AUTOSAR 生态深度分析 |
 | **P3** | 工程实践强化 | 🔄 进行中 | 编译、测试、修复、扩展 |
 | **P4** | 贡献与定制 | ⏳ 未开始 | 自定义 Agent、Skill、Adapter |
 
@@ -298,7 +298,44 @@ python -m tools.tool_router --list    # 列出工具适配器
 - [x] **P4 贡献定制**: 写 `install-kimi.sh` 安装脚本（验证跨平台安装）
 - [x] **P4 贡献定制**: 把 Agent Markdown 批量转成 Kimi 知识库格式
 - [ ] **P3 工程强化**: 运行 `llm_council.py --secondary-provider kimi` 进行真实端到端辩论测试（需 Kimi 开放平台 `sk-...` API Key）
-- [ ] **P3 工程强化**: 为 `KimiAdapter` 补充单元测试（mock OpenAI client）
+- [x] **P3 工程强化**: 为 `KimiAdapter` 补充单元测试（mock OpenAI client）
+
+---
+
+### Session 4 — KimiAdapter Mock 单元测试（Plan Mode 续接）
+
+**日期**: 2026-04-25（Session 3 续接）  
+**模式**: Plan Mode → 工程实现
+
+#### 完成内容
+
+**1. `tests/unit/test_kimi_adapter.py` — 完整 Mock 测试套件**
+- 使用 `unittest.mock.patch("openai.OpenAI")` 模拟 OpenAI 客户端
+- **12 个测试用例，全部通过**（`pytest -v` 验证）
+
+| 测试类 | 用例数 | 覆盖场景 |
+|--------|--------|---------|
+| `TestKimiAdapterSuccess` | 2 | 正常返回文本/耗时、消息格式验证 |
+| `TestKimiAdapterCache` | 3 | 缓存命中（duration=0）、miss→hit、无缓存模式 |
+| `TestKimiAdapterErrorHandling` | 2 | API 错误日志+re-raise、OpenAI 初始化错误传播 |
+| `TestKimiAdapterTokenTracking` | 3 | Token 累计、stats 字典、缺失 usage 属性 |
+| `TestKimiAdapterConfiguration` | 2 | endpoint 配置、缺失 API Key 报错 |
+
+**2. 测试关键发现**
+- `KimiAdapter.client` 使用懒加载（lazy import），`patch("tools.llm_council.OpenAI")` 无效，必须 `patch("openai.OpenAI")`
+- `client` property 初始化时会调用 `_get_api_key()`，测试中需通过 `patch.dict(os.environ, {"KIMI_API_KEY": "sk-dummy"})` 提供虚拟 Key
+- 缓存逻辑验证：`ResponseCache` 的 hit/miss 行为与 `KimiAdapter` 正确集成
+
+**3. Git 提交**
+- Commit: `ece3655` — 为KimiAdapter补充Mock单元测试，验证消息格式、缓存、错误处理和Token统计
+
+#### 待办状态更新
+
+- [x] P4: `KimiAdapter`（验证多模型扩展性）
+- [x] P4: `install-kimi.sh`（验证跨平台安装）
+- [x] P4: Agent Markdown 批量转换
+- [x] P3: `KimiAdapter` Mock 单元测试
+- [ ] P3: 真实端到端辩论测试（需开放平台 API Key）
 
 **额外完成（Session 3 续接）**
 
