@@ -359,6 +359,72 @@ python -m tools.tool_router --list    # 列出工具适配器
 
 ---
 
+### Session 5 — OpenAICompatibleAdapter 通用化重构
+
+**日期**: 2026-04-25（Session 4 续接）  
+**模式**: Yolo Mode（用户已批准方案，直接执行）
+
+#### 完成内容
+
+**1. `tools/llm_council.py` — 合并重复代码为通用适配器**
+
+| 变更 | 之前 | 之后 |
+|------|------|------|
+| Adapter 类 | `GPTAdapter` (~80行) + `KimiAdapter` (~80行) | `OpenAICompatibleAdapter` (~95行) |
+| 重复代码 | 2 份几乎相同的 `get_completion` | 1 份统一实现，日志中 provider 名称动态化 |
+| 客户端选择 | 硬编码 `AzureOpenAI` / `OpenAI` | 根据 `config.provider` 自动分支：`azure-openai` → `AzureOpenAI`，其他 → `OpenAI` |
+| 支持平台 | GPT (Azure)、Kimi | **任意 OpenAI-compatible**：Kimi / DeepSeek / 智谱 / OpenRouter / Azure OpenAI / OpenAI 官方 |
+
+- **向后兼容**：`GPTAdapter` 和 `KimiAdapter` 保留为空子类（标记 Deprecated），现有外部代码不受影响
+- **新增配置**：`DEFAULT_DEEPSEEK_CONFIG`（`deepseek-chat`, `https://api.deepseek.com/v1`, `DEEPSEEK_API_KEY`）
+- **CLI 扩展**：`--secondary-provider {gpt,kimi,deepseek}`
+- **LLMCouncil 初始化**：`provider == "anthropic"` → `ClaudeAdapter`，**其他所有 provider** → `OpenAICompatibleAdapter`
+
+**代码统计**：`+65 -94` 行（净减少 29 行，移除 160 行重复，新增通用逻辑 + DeepSeek 配置）
+
+**2. `tests/unit/test_kimi_adapter.py` — 测试修复**
+
+- 失败原因：`OpenAICompatibleAdapter` 使用 `self.config.provider`（小写 `"kimi"`）生成日志，原测试断言硬编码 `"Kimi API error"`
+- 修复：测试断言改为 `"kimi API error"`（与动态日志一致）
+- **结果：12/12 全部通过**
+
+**3. `CHANGELOG.md` — 记录新功能**
+
+- 新增 "Universal OpenAI-compatible adapter" 条目
+- 记录 DeepSeek secondary provider 支持
+
+**4. Git 提交与推送**
+
+- Commit: `4198450` — `refactor(llm_council): unify GPTAdapter + KimiAdapter into OpenAICompatibleAdapter`
+- 仅提交 3 个相关文件：`tools/llm_council.py`、`tests/unit/test_kimi_adapter.py`、`CHANGELOG.md`
+- BMS 修复文件（`main.c`、`test_soc_estimator.c`）保持未跟踪状态，符合用户要求
+
+#### 设计决策记录
+
+> **为什么选择 `config.provider` 作为分支条件，而非硬编码 provider 列表？**
+> 
+> 方案 A（采用）：`if provider == "azure-openai": AzureOpenAI else: OpenAI`
+> - 优点：无需维护 provider 白名单，任何新平台只需提供 `endpoint` 即可自动支持
+> - 缺点：`provider` 名称仅用于日志，无运行时校验
+> 
+> 方案 B（放弃）：维护 `OPENAI_COMPATIBLE_PROVIDERS = {"kimi", "deepseek", "zhipu", ...}`
+> - 优点：显式列出支持平台，代码自文档
+> - 缺点：每新增一个平台需改代码，违背通用化初衷
+> 
+> **结论**：采用方案 A，LLM Council 的扩展性最大化——新平台支持从"改代码+发版"降为"改配置"。
+
+#### 待办状态更新
+
+- [x] P4: `KimiAdapter`（验证多模型扩展性）
+- [x] P4: `install-kimi.sh`（验证跨平台安装）
+- [x] P4: Agent Markdown 批量转换
+- [x] P3: `KimiAdapter` Mock 单元测试
+- [x] P3: **通用化 `OpenAICompatibleAdapter`**（本次完成）
+- [ ] P3: 真实端到端辩论测试（需开放平台 API Key 或 DeepSeek Key）
+- [ ] P2: 领域深入（ADAS/AUTOSAR/Battery 任选）
+
+---
+
 *最后更新: 2026-04-25*  
-*本次会话结束。下次建议从 "P2 领域深入（ADAS/AUTOSAR/Battery 任选）" 或 "申请开放平台 API Key 跑端到端辩论测试" 开始*
+*本次会话结束。下次建议：① 申请 DeepSeek API Key（很便宜，¥1 可跑很多次辩论测试）跑端到端辩论；② 安装 Claude Code CLI 体验完整 `/automotive` commands；③ P2 领域深入*
 
